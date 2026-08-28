@@ -1,0 +1,363 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+CSV_FILE="/opt/akvorado/customer-mapping/customer_ip_map.csv"
+
+DATABASE="default"
+TARGET_TABLE="customer_ip_map"
+STAGING_TABLE="customer_ip_map_staging"
+BACKUP_TABLE="customer_ip_map_previous"
+
+ACTIVE_CSV="$(mktemp /tmp/customer-ip-map-active.XXXXXX.csv)"
+
+cleanup() {
+    rm -f "${ACTIVE_CSV}"
+}
+
+trap cleanup EXIT
+
+# ============================================================
+# 1. Xác định ClickHouse container
+# ============================================================
+
+CH_CONTAINER="$(
+    docker ps --format '{{.Names}}' |
+    grep -i clickhouse |
+    head -n1
+)"
+
+if [[ -z "${CH_CONTAINER}" ]]; then
+    echo "ERROR: Không tìm thấy container ClickHouse đang chạy."
+    exit 1
+fi
+
+# ============================================================
+# 2. Kiểm tra file CSV
+# ============================================================
+
+if [[ ! -f "${CSV_FILE}" ]]; then
+    echo "ERROR: Không tìm thấy file:"
+    echo "${CSV_FILE}"
+    exit 1
+fi
+
+EXPECTED_HEADER="customer_name,customer_ip,description,enabled"
+ACTUAL_HEADER="$(head -n1 "${CSV_FILE}" | tr -d '\r')"
+
+if [[ "${ACTUAL_HEADER}" != "${EXPECTED_HEADER}" ]]; then
+    echo "ERROR: Header CSV không đúng."
+    echo "Expected: ${EXPECTED_HEADER}"
+    echo "Actual:   ${ACTUAL_HEADER}"
+    exit 1
+fi
+
+# ============================================================
+# 3. Validate CSV và tạo file active
+#
+# Quy tắc:
+# - customer_ip luôn bắt buộc.
+# - enabled chỉ nhận 0 hoặc 1.
+# - enabled=1 bắt buộc phải có customer_name.
+# - enabled=0 có thể để trống customer_name.
+# - description được phép để trống.
+# - Một IP không được xuất hiện hai lần.
+# - Chỉ mapping enabled=1 được import vào ClickHouse.
+# ============================================================
+
+python3 - "${CSV_FILE}" "${ACTIVE_CSV}" <<'PY'
+import csv
+import ipaddress
+import sys
+from pathlib import Path
+
+source_file = Path(sys.argv[1])
+active_file = Path(sys.argv[2])
+
+expected_header = [
+    "customer_name",
+    "customer_ip",
+    "description",
+    "enabled",
+]
+
+seen_ips = {}
+active_rows = []
+errors = []
+
+with source_file.open("r", encoding="utf-8-sig", newline="") as source:
+    reader = csv.DictReader(source)
+
+    if reader.fieldnames != expected_header:
+        raise SystemExit(
+            "ERROR: CSV header không đúng thứ tự hoặc thiếu cột."
+        )
+
+    for line_number, row in enumerate(reader, start=2):
+        customer_name = (row.get("customer_name") or "").strip()
+        customer_ip = (row.get("customer_ip") or "").strip()
+        description = (row.get("description") or "").strip()
+        enabled_text = (row.get("enabled") or "").strip()
+
+        # Bỏ qua dòng hoàn toàn trống
+        if not any([customer_name, customer_ip, description, enabled_text]):
+            continue
+
+        if not customer_ip:
+            errors.append(
+                f"Line {line_number}: customer_ip bị trống"
+            )
+            continue
+
+        try:
+            parsed_ip = ipaddress.ip_address(customer_ip)
+        except ValueError:
+            errors.append(
+                f"Line {line_number}: IP không hợp lệ: {customer_ip}"
+            )
+            continue
+
+        if parsed_ip.version != 4:
+            errors.append(
+                f"Line {line_number}: hiện tại chỉ hỗ trợ IPv4: {customer_ip}"
+            )
+            continue
+
+        if customer_ip in seen_ips:
+            errors.append(
+                f"Line {line_number}: IP {customer_ip} bị trùng "
+                f"với line {seen_ips[customer_ip]}"
+            )
+            continue
+
+        seen_ips[customer_ip] = line_number
+
+        if enabled_text not in {"0", "1"}:
+            errors.append(
+                f"Line {line_number}: enabled phải là 0 hoặc 1"
+            )
+            continue
+
+        enabled = int(enabled_text)
+
+        if enabled == 1 and not customer_name:
+            errors.append(
+                f"Line {line_number}: enabled=1 nhưng customer_name bị trống"
+            )
+            continue
+
+        if enabled == 1:
+            active_rows.append(
+                [
+                    customer_name,
+                    f"::ffff:{customer_ip}",
+                    description,
+                    enabled,
+                ]
+            )
+
+if errors:
+    print("ERROR: CSV không hợp lệ:")
+    for error in errors:
+        print(f"  - {error}")
+    raise SystemExit(1)
+
+if not active_rows:
+    raise SystemExit(
+        "ERROR: Không có mapping active nào. "
+        "Không đồng bộ để tránh làm rỗng bảng."
+    )
+
+with active_file.open("w", encoding="utf-8", newline="") as output:
+    writer = csv.writer(output)
+    writer.writerows(active_rows)
+
+print(f"CSV inventory IPs : {len(seen_ips)}")
+print(f"Active mappings   : {len(active_rows)}")
+PY
+
+ACTIVE_ROWS="$(wc -l < "${ACTIVE_CSV}")"
+
+echo
+echo "ClickHouse container : ${CH_CONTAINER}"
+echo "CSV source           : ${CSV_FILE}"
+echo "Active records       : ${ACTIVE_ROWS}"
+
+# ============================================================
+# 4. Tạo lại bảng staging
+# ============================================================
+
+docker exec -i "${CH_CONTAINER}" clickhouse-client --multiquery <<SQL
+DROP TABLE IF EXISTS ${DATABASE}.${STAGING_TABLE};
+
+CREATE TABLE ${DATABASE}.${STAGING_TABLE}
+(
+    customer_name String,
+    customer_ip   IPv6,
+    description   String DEFAULT '',
+    enabled       UInt8 DEFAULT 1
+)
+ENGINE = MergeTree
+ORDER BY (customer_name, customer_ip);
+SQL
+
+# ============================================================
+# 5. Import trực tiếp CSV active vào staging
+#
+# async_insert phải tắt riêng cho lệnh này vì dữ liệu đi qua stdin.
+# ============================================================
+CONTAINER_CSV="/tmp/customer_ip_map_active.csv"
+
+docker cp "${ACTIVE_CSV}" \
+    "${CH_CONTAINER}:${CONTAINER_CSV}"
+
+docker exec "${CH_CONTAINER}" clickhouse-client \
+    --async_insert=0 \
+    --query "
+        INSERT INTO ${DATABASE}.${STAGING_TABLE}
+        (
+            customer_name,
+            customer_ip,
+            description,
+            enabled
+        )
+        FROM INFILE '${CONTAINER_CSV}'
+        FORMAT CSV
+    "
+
+docker exec "${CH_CONTAINER}" \
+    rm -f "${CONTAINER_CSV}"
+# ============================================================
+# 6. Kiểm tra số lượng import
+# ============================================================
+
+IMPORTED_ROWS="$(
+    docker exec "${CH_CONTAINER}" clickhouse-client \
+        --query "
+            SELECT count()
+            FROM ${DATABASE}.${STAGING_TABLE}
+        "
+)"
+
+if [[ "${IMPORTED_ROWS}" -ne "${ACTIVE_ROWS}" ]]; then
+    echo "ERROR: Số record import không khớp."
+    echo "Active CSV rows : ${ACTIVE_ROWS}"
+    echo "Imported rows   : ${IMPORTED_ROWS}"
+
+    docker exec "${CH_CONTAINER}" clickhouse-client \
+        --query "
+            DROP TABLE IF EXISTS ${DATABASE}.${STAGING_TABLE}
+        "
+
+    exit 1
+fi
+
+# ============================================================
+# 7. Kiểm tra duplicate trong staging
+# ============================================================
+
+DUPLICATE_IPS="$(
+    docker exec "${CH_CONTAINER}" clickhouse-client \
+        --query "
+            SELECT count()
+            FROM
+            (
+                SELECT customer_ip
+                FROM ${DATABASE}.${STAGING_TABLE}
+                GROUP BY customer_ip
+                HAVING count() > 1
+            )
+        "
+)"
+
+if [[ "${DUPLICATE_IPS}" -ne 0 ]]; then
+    echo "ERROR: Phát hiện duplicate IP trong staging."
+
+    docker exec "${CH_CONTAINER}" clickhouse-client \
+        --query "
+            SELECT
+                customer_ip,
+                groupArray(customer_name) AS customers,
+                count() AS occurrences
+            FROM ${DATABASE}.${STAGING_TABLE}
+            GROUP BY customer_ip
+            HAVING count() > 1
+            FORMAT PrettyCompact
+        "
+
+    docker exec "${CH_CONTAINER}" clickhouse-client \
+        --query "
+            DROP TABLE IF EXISTS ${DATABASE}.${STAGING_TABLE}
+        "
+
+    exit 1
+fi
+
+# ============================================================
+# 8. Thay bảng chính bằng bảng staging
+# ============================================================
+
+TARGET_EXISTS="$(
+    docker exec "${CH_CONTAINER}" clickhouse-client \
+        --query "
+            SELECT count()
+            FROM system.tables
+            WHERE database = '${DATABASE}'
+              AND name = '${TARGET_TABLE}'
+        "
+)"
+
+docker exec "${CH_CONTAINER}" clickhouse-client \
+    --query "
+        DROP TABLE IF EXISTS ${DATABASE}.${BACKUP_TABLE}
+    "
+
+if [[ "${TARGET_EXISTS}" -eq 1 ]]; then
+    docker exec -i "${CH_CONTAINER}" clickhouse-client --multiquery <<SQL
+RENAME TABLE
+    ${DATABASE}.${TARGET_TABLE}
+        TO ${DATABASE}.${BACKUP_TABLE},
+    ${DATABASE}.${STAGING_TABLE}
+        TO ${DATABASE}.${TARGET_TABLE};
+SQL
+else
+    docker exec "${CH_CONTAINER}" clickhouse-client \
+        --query "
+            RENAME TABLE
+                ${DATABASE}.${STAGING_TABLE}
+                TO ${DATABASE}.${TARGET_TABLE}
+        "
+fi
+
+# ============================================================
+# 9. Cấp quyền đọc cho Grafana
+# ============================================================
+
+docker exec "${CH_CONTAINER}" clickhouse-client \
+    --query "
+        GRANT SELECT
+        ON ${DATABASE}.${TARGET_TABLE}
+        TO grafana_ro
+    " 2>/dev/null || true
+
+# ============================================================
+# 10. Hiển thị kết quả
+# ============================================================
+
+echo
+echo "OK: Đồng bộ customer mapping thành công."
+echo "Imported records: ${IMPORTED_ROWS}"
+echo
+
+docker exec "${CH_CONTAINER}" clickhouse-client \
+    --query "
+        SELECT
+            customer_name,
+            customer_ip,
+            description,
+            enabled
+        FROM ${DATABASE}.${TARGET_TABLE}
+        ORDER BY
+            customer_name,
+            customer_ip
+        FORMAT PrettyCompact
+    "

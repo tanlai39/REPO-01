@@ -1,0 +1,189 @@
+root@netflow:~# cat /opt/akvorado/docker/docker-compose-local.yml
+# If possible, overrides should go there!
+
+# If you prefer to use geo IP databases from host, uncomment this block.
+
+# services:
+#   akvorado-orchestrator:
+#     volumes:
+#       - /usr/share/GeoIP:/usr/share/GeoIP:ro
+
+# If you prefer GeoLite2-City instead of GeoLite-Country (also check .env and akvorado.yaml for Maxmind support)
+
+# services:
+#   geoip:
+#     environment:
+#       GEOIPUPDATE_EDITION_IDS: GeoLite2-ASN GeoLite2-City
+
+# If you want to expose the service directly on port 80, uncomment this block.
+
+# services:
+#   traefik:
+#     ports:
+#       - 80:8081/tcp
+
+# To not use SQLite for the console database, you need to unset a specific
+# environment variable:
+
+# services:
+#   akvorado-console:
+#     environment:
+#       AKVORADO_CFG_CONSOLE_DATABASE_DSN: !reset null
+
+# To add use HTTP basic auth to protect the service, uncomment the snippet
+# below. You can generate your own user/password with "htpasswd -nB akvorado".
+# If you enable TLS, replace "public" by "publicsecure".
+
+# services:
+#   traefik:
+#     environment:
+#       TRAEFIK_ENTRYPOINTS_public_HTTP_MIDDLEWARES: auth@docker
+#     labels:
+#       - traefik.http.middlewares.auth.basicauth.users=akvorado:$$2y$$05$$Ud.JjfZWtKlSOoXKkv48leXze3u4cSNC5G4lG9nkfv5OFOkVcgRrm
+
+# To enable integration with an SSO and protect the console, use something like this:
+
+# services:
+#   akvorado-console:
+#     labels:
+#       # Override authentication middleware
+#       - traefik.http.routers.akvorado-console.middlewares=sso
+#       - traefik.http.middlewares.sso.forwardauth.address=http://sso.example.com/api/authz/forward-auth
+#       - traefik.http.middlewares.sso.forwardauth.trustForwardHeader=true
+#       - traefik.http.middlewares.sso.forwardauth.authResponseHeaders=Remote-User,Remote-Name,Remote-Email
+
+# It is possible to configure the middleware globally:
+
+# services:
+#   traefik:
+#     environment:
+#       TRAEFIK_ENTRYPOINTS_private_HTTP_MIDDLEWARES: compress@docker,sso@docker
+#     labels:
+#       - traefik.http.middlewares.sso.forwardauth.address=http://sso.example.com/api/authz/forward-auth
+#       - traefik.http.middlewares.sso.forwardauth.trustForwardHeader=true
+#       - traefik.http.middlewares.sso.forwardauth.authResponseHeaders=Remote-User,Remote-Name,Remote-Email
+#   akvorado-console:
+#     labels:
+#       - traefik.http.routers.akvorado-console.middlewares=
+
+# For OAuth2 services not supporting forward authentication, one can use traefik-forward-auth. Here is an example:
+
+# services:
+#   sso:
+#     image: ghcr.io/italypaleale/traefik-forward-auth:4
+#     restart: unless-stopped
+#     volumes:
+#       - ./traefik-forward-auth.yaml:/etc/traefik-forward-auth/config.yaml
+#     healthcheck:
+#       interval: 20s
+#     labels:
+#       - traefik.enable=true
+#       - traefik.http.services.sso.loadbalancer.server.port=4181
+#       - traefik.http.routers.sso.rule=PathPrefix(`/sso`)
+#   akvorado-console:
+#     environment:
+#       AKVORADO_CFG_CONSOLE_AUTH_HEADERS_LOGIN: X-Forwarded-User
+#       AKVORADO_CFG_CONSOLE_AUTH_HEADERS_NAME: X-Forwarded-Displayname
+#       AKVORADO_CFG_CONSOLE_AUTH_DEFAULTUSER_LOGIN: ""
+#       AKVORADO_CFG_CONSOLE_AUTH_LOGOUTURL: /sso/portals/main/logout
+#       AKVORADO_CFG_CONSOLE_AUTH_AVATARURL: "https://avatars.githubusercontent.com/{{ .Login }}?s=80"
+#     labels:
+#       # Override authentication middleware
+#       - traefik.http.routers.akvorado-console.middlewares=sso
+#       - traefik.http.middlewares.sso.forwardauth.address=http://sso:4181/sso/portals/main
+#       - traefik.http.middlewares.sso.forwardauth.trustForwardHeader=true
+#       - traefik.http.middlewares.sso.forwardauth.authResponseHeaders=X-Forwarded-User,X-Forwarded-Displayname,X-Authenticated-User
+
+# If you don't want to expose Kafka-UI and Traefik on the public endpoints, uncomment this block.
+
+# services:
+#   kafka-ui:
+#     labels:
+#       - traefik.http.routers.kafka-ui.entrypoints=private
+#   traefik:
+#     labels:
+#       - traefik.http.routers.traefik.entrypoints=private
+
+# To enable IPv6 routing, uncomment the following block. This requires Docker
+# Engine v27.
+
+# networks:
+#   default:
+#     driver: bridge
+#     driver_opts:
+#       com.docker.network.bridge.gateway_mode_ipv6: routed
+#     ipam:
+#       driver: default
+#       config:
+#         - subnet: 2001:db8::/64
+#           gateway: 2001:db8::1
+
+# You can enable the eBPF load balancer to evenly spread load between workers:
+
+# services:
+#   akvorado-inlet:
+#     cap_add:
+#       - BPF # or SYS_ADMIN if you don't have Linux 5.8+
+
+# If you want to deploy a multi-node deployment, you can keep using this Docker
+# Compose setup by disabling the elements you don't want. For example, on nodes
+# where you only want the inlet service, assuming 192.168.1.16 is the IP address
+# of the orchestrator and you have two inlet configurations:
+#
+# services:
+#   traefik:
+#     profiles: [ enabled ]
+#   akvorado-inlet:
+#     profiles: [ enabled ]
+#     command: inlet http://192.168.1.16:8080#1
+#
+# services:
+#   traefik:
+#     profiles: [ enabled ]
+#   akvorado-inlet:
+#     profiles: [ enabled ]
+#     command: inlet http://192.168.1.16:8080#2
+#
+# And invoke "docker compose --profile enabled up --wait".
+#
+# Alternatively, you can also use this configuration if all inlet share the same
+# configuration:
+#
+# services:
+#   traefik:
+#     profiles: [ enabled ]
+#   akvorado-inlet:
+#     profiles: [ enabled ]
+#     extra_hosts:
+#       - "akvorado-orchestrator:192.168.1.16"
+#       - "kafka:192.168.1.18"
+#
+# You can also disable some services by putting them in an unused profile:
+#
+# services:
+#   akvorado-inlet:
+#     profiles: [ disabled ]
+# Local production overrides
+volumes:
+  akvorado-clickhouse:
+    driver_opts:
+      type: none
+      o: bind
+      device: /data/clickhouse
+
+  akvorado-kafka:
+    driver_opts:
+      type: none
+      o: bind
+      device: /data/kafka
+
+services:
+  traefik:
+    ports: !override
+      - "127.0.0.1:8080:8080/tcp"
+      - "172.16.31.110:8081:8081/tcp"
+    environment:
+      TRAEFIK_ENTRYPOINTS_public_HTTP_MIDDLEWARES: "compress@docker"
+    labels:
+      - "traefik.http.middlewares.auth.basicauth.users=akvorado:$$2y$$05$$7ILdL.xxxxxxxxxxxxxxxxxx.WUy9dWQ.C4KHatUAm"
+root@netflow:~#

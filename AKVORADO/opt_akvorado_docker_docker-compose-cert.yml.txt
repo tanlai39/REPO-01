@@ -1,0 +1,14 @@
+root@netflow:~# cat /opt/akvorado/docker/docker-compose-cert.yml
+services:
+  traefik:
+    environment:
+      TRAEFIK_PROVIDERS_FILE_DIRECTORY: /etc/traefik/dynamic
+      TRAEFIK_PROVIDERS_FILE_WATCH: "true"
+
+      # Áp dụng Basic Auth cho toàn bộ truy cập HTTPS
+      TRAEFIK_ENTRYPOINTS_publicsecure_HTTP_MIDDLEWARES: "compress@docker"
+
+    volumes:
+      - /opt/akvorado/certs:/etc/traefik/certs:ro
+      - /opt/akvorado/traefik-dynamic:/etc/traefik/dynamic:ro
+root@netflow:~#

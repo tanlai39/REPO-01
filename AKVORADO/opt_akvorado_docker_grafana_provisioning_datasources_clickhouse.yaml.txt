@@ -1,0 +1,21 @@
+root@netflow:~# cat /opt/akvorado/docker/grafana/provisioning/datasources/clickhouse.yaml
+---
+apiVersion: 1
+datasources:
+  - name: Akvorado ClickHouse
+    uid: akvorado-clickhouse
+    type: grafana-clickhouse-datasource
+    access: proxy
+    editable: false
+    jsonData:
+      host: clickhouse
+      port: 9000
+      protocol: native
+      username: grafana_ro
+      defaultDatabase: default
+      secure: false
+      tlsSkipVerify: false
+    secureJsonData:
+      password: |-
+        xxxxxxxxx
+root@netflow:~#

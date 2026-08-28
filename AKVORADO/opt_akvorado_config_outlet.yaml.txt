@@ -1,0 +1,136 @@
+root@netflow:~# cat  /opt/akvorado/config/outlet.yaml
+---
+metadata:
+  providers:
+    - type: snmp
+      credentials:
+        ::/0:
+          communities: xxxxx@2019
+routing:
+  provider:
+    type: bmp
+    # Before increasing this value, look for it in the troubleshooting section
+    # of the documentation.
+    receive-buffer: 212992
+core:
+  # Cisco ASR1002-X export full flow, không sampling
+  default-sampling-rate: 1
+
+  asn-providers:
+    - flow-except-default-route
+    - geo-ip
+  exporter-classifiers:
+    # This is an example. This should be customized depending on how
+    # your exporters are named.
+    - ClassifySiteRegex(Exporter.Name, "^([^-]+)-", "$1")
+    - ClassifyRegion("europe")
+    - ClassifyTenant("acme")
+    - ClassifyRole("edge")
+  interface-classifiers:
+      # ============================================================
+      # R1 - External: NIX
+      # ============================================================
+
+      - |
+        Exporter.Name == "rCoreTPC-01.tpcloud.vn" &&
+        Interface.Name == "Gi0/0/5.1603" &&
+        ClassifyConnectivity("ix") &&
+        ClassifyProvider("NIX") &&
+        ClassifyExternal()
+
+      - |
+        Exporter.Name == "rCoreTPC-01.tpcloud.vn" &&
+        Interface.Name == "Gi0/0/5.1606" &&
+        ClassifyConnectivity("ix") &&
+        ClassifyProvider("NIX") &&
+        ClassifyExternal()
+
+      # ============================================================
+      # R1 - External: Viettel transit
+      # ============================================================
+
+      - |
+        Exporter.Name == "rCoreTPC-01.tpcloud.vn" &&
+        Interface.Name == "Gi0/0/4" &&
+        ClassifyConnectivity("transit") &&
+        ClassifyProvider("Viettel") &&
+        ClassifyExternal()
+
+      # ============================================================
+      # R1 - Internal: inter-router/core links
+      # ============================================================
+
+      - |
+        Exporter.Name == "rCoreTPC-01.tpcloud.vn" &&
+        Interface.Name == "Gi0/0/2" &&
+        ClassifyConnectivity("core") &&
+        ClassifyProvider("TPCLOUD") &&
+        ClassifyInternal()
+
+      - |
+        Exporter.Name == "rCoreTPC-01.tpcloud.vn" &&
+        Interface.Name == "Po40.1605" &&
+        ClassifyConnectivity("core") &&
+        ClassifyProvider("TPCLOUD") &&
+        ClassifyInternal()
+
+      # ============================================================
+      # R2 - External: IXP
+      # ============================================================
+
+      - |
+        Exporter.Name == "rCoreTPC-02.tpcloud.vn" &&
+        Interface.Name == "Po20.1604" &&
+        ClassifyConnectivity("ix") &&
+        ClassifyProvider("IXP") &&
+        ClassifyExternal()
+
+      - |
+        Exporter.Name == "rCoreTPC-02.tpcloud.vn" &&
+        Interface.Name == "Po20.1607" &&
+        ClassifyConnectivity("ix") &&
+        ClassifyProvider("IXP") &&
+        ClassifyExternal()
+
+      # ============================================================
+      # R2 - Internal: inter-router/core links
+      # ============================================================
+
+      - |
+        Exporter.Name == "rCoreTPC-02.tpcloud.vn" &&
+        Interface.Name == "Gi0/0/2" &&
+        ClassifyConnectivity("core") &&
+        ClassifyProvider("TPCLOUD") &&
+        ClassifyInternal()
+
+      - |
+        Exporter.Name == "rCoreTPC-02.tpcloud.vn" &&
+        Interface.Name == "Po30.1605" &&
+        ClassifyConnectivity("core") &&
+        ClassifyProvider("TPCLOUD") &&
+        ClassifyInternal()
+
+      # ============================================================
+      # Future interfaces có description chuẩn:
+      # Transit: Provider
+      # IX: Provider
+      # PNI: Provider
+      # PPNI: Provider
+      # ============================================================
+
+      - |
+        ClassifyConnectivityRegex(
+          Interface.Description,
+          "^(?i)(transit|pni|ppni|ix):? ",
+          "$1"
+        ) &&
+        ClassifyProviderRegex(
+          Interface.Description,
+          "^\\S+?\\s(\\S+)",
+          "$1"
+        ) &&
+        ClassifyExternal()
+
+      # Những interface còn lại mặc định là internal
+      - ClassifyInternal()
+root@netflow:~#
