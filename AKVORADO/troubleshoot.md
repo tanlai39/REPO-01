@@ -136,7 +136,42 @@ FORMAT PrettyCompact
 "
 ```
 
-# 7. Check Dung Lượng ClickHouse Theo Table
+# 7. IP download từ source nào trong 30 giây gần nhất
+```
+cd /opt/akvorado
+
+docker compose exec -T clickhouse clickhouse-client --query "
+WITH toIPv6('::ffff:103.141.177.22') AS target_ip
+SELECT
+    replaceOne(toString(SrcAddr), '::ffff:', '') AS source_ip,
+    SrcCountry,
+    SrcAS,
+    ExporterName,
+    InIfName,
+    OutIfName,
+    count() AS flow_records,
+    uniqExact(DstPort) AS dst_port_count,
+    round(sum(Packets * SamplingRate) / 30, 0) AS pps,
+    round(sum(Bytes * SamplingRate) * 8 / 30 / 1000000, 2) AS mbps,
+    round(sum(Bytes * SamplingRate) / nullIf(sum(Packets * SamplingRate), 0), 0) AS avg_packet_bytes
+FROM default.flows
+PREWHERE TimeReceived >= now() - INTERVAL 30 SECOND
+WHERE DstAddr = target_ip
+GROUP BY
+    SrcAddr,
+    SrcCountry,
+    SrcAS,
+    ExporterName,
+    InIfName,
+    OutIfName
+ORDER BY flow_records DESC
+LIMIT 20
+FORMAT PrettyCompact
+"
+```
+
+
+# 8. Check Dung Lượng ClickHouse Theo Table
 ```
 cd /opt/akvorado
 
