@@ -122,7 +122,7 @@ $TTL 86400
         604800      ;Expire
         86400       ;Minimum TTL
 )
-        IN  NS      dns.openstack.local.
+        IN  NS      dns.k8s.local.
         IN  A       10.0.0.250
 
 dns              IN  A       10.0.0.250
@@ -153,7 +153,7 @@ $TTL 86400
         604800      ;Expire
         86400       ;Minimum TTL
 )
-        IN  NS      dns.tpcoms.ai.
+        IN  NS      dns.tanlv.io.vn.
         IN  A       10.0.0.250
 
 tke-k8s                 IN  A       10.0.0.30
